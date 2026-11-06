@@ -7,8 +7,9 @@
  * License: GPLv2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain: hydro-shortlinks
- * Requires at least: 6.2
- * Requires PHP: 8.1
+ * Tested up to: 7.2
+ * Requires at least: 7.1
+ * Requires PHP: 8.4
  */
 
 declare(strict_types=1);

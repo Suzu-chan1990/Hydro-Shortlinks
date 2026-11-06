@@ -1,7 +1,7 @@
 <p align="center"><img src="./assets/banner-772x250.png" width="772" alt="Hydro Shortlinks"></p>
 
 ![WordPress](https://img.shields.io/badge/WordPress-6.2%2B-blue)
-![PHP](https://img.shields.io/badge/PHP-8.1%2B-purple)
+![PHP](https://img.shields.io/badge/PHP-8.4%2B-purple)
 ![License](https://img.shields.io/badge/license-GPLv2%2B-green)
 ![Scale](https://img.shields.io/badge/tested-1M%20links%20%2F%202M%20clicks-cyan)
 ![Status](https://img.shields.io/badge/status-stable-brightgreen)
@@ -186,8 +186,8 @@ sudo -u <fpm-user> wp hydro rollup
 
 # ⚙️ Requirements
 
-* WordPress 6.2 or newer
-* PHP 8.1 or newer
+* WordPress 7.1 or newer
+* PHP 8.4 or newer
 * MySQL 5.7+ or MariaDB 10.3+ (InnoDB)
 * WP-Cron (or a real cron calling `wp-cron.php`) for the background jobs
 
