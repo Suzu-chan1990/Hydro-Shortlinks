@@ -1,0 +1,84 @@
+.hydro-meta-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 5px;
+  font-family: "Inter", system-ui, sans-serif;
+}
+
+.hydro-meta-wrap label {
+  font-weight: 600;
+  color: #333;
+  margin-top: 4px;
+}
+
+.hydro-meta-wrap input[type="text"],
+.hydro-meta-wrap textarea {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 14px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  transition: 0.2s all ease-in-out;
+  background: #fff;
+}
+
+.hydro-meta-wrap input:focus,
+.hydro-meta-wrap textarea:focus {
+  border-color: #0073aa;
+  box-shadow: 0 0 0 2px rgba(0, 115, 170, 0.2);
+  outline: none;
+}
+
+/* ===== Vorschau-Karte ===== */
+.hydro-meta-preview {
+  position: relative;
+  border-radius: 10px;
+  margin-top: 14px;
+  overflow: hidden;
+  background: #fafafa;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+  max-width: 620px;
+  transition: background 0.3s ease;
+}
+
+.hydro-meta-preview img {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.hydro-meta-preview .overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(0,0,0,0.6);
+  color: #fff;
+  padding: 12px 14px;
+}
+
+.hydro-meta-preview h4 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.hydro-meta-preview p {
+  margin: 0;
+  font-size: 13px;
+  color: #ddd;
+}
+
+.hydro-meta-preview.dark .overlay {
+  background: rgba(255,255,255,0.1);
+  color: #eee;
+}
+
+.hydro-meta-theme-toggle {
+  margin-top: 10px;
+  font-size: 12px;
+  color: #0073aa;
+  cursor: pointer;
+  user-select: none;
+}
