@@ -7,9 +7,9 @@
  * License: GPLv2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain: hydro-shortlinks
- * Tested up to: 7.2
  * Requires at least: 7.1
  * Requires PHP: 8.4
+ * Update URI: https://github.com/Suzu-chan1990/Hydro-Shortlinks
  */
 
 declare(strict_types=1);
@@ -362,3 +362,36 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 }
 
 new Hydro_Shortlinks();
+
+// =================================================================
+// GITHUB UPDATER (Plugin Update Checker)
+// =================================================================
+// Updates come from the GitHub releases of Suzu-chan1990/Hydro-Shortlinks.
+// Loaded in the admin, during WP-Cron (background update checks) and in WP-CLI –
+// never on normal frontend requests, so redirects stay as lean as before.
+add_action( 'init', 'hydro_github_updater' );
+
+function hydro_github_updater(): void {
+    // Build the checker only once – a second instance with the same slug is a fatal error in PUC.
+    static $built = false;
+    if ( $built ) {
+        return;
+    }
+    if ( ! is_admin() && ! wp_doing_cron() && ! ( defined( 'WP_CLI' ) && WP_CLI ) ) {
+        return;
+    }
+    $puc = HYDRO_DIR . 'lib/plugin-update-checker/plugin-update-checker.php';
+    if ( ! file_exists( $puc ) ) {
+        return; // Library missing – the plugin keeps working without updates.
+    }
+    require_once $puc;
+    $built = true;
+
+    $checker = \YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker(
+        'https://github.com/Suzu-chan1990/Hydro-Shortlinks/',
+        HYDRO_FILE,
+        'hydro-shortlinks'
+    );
+    // Use the ZIP attached to a GitHub release (falls back to the tag's source ZIP).
+    $checker->getVcsApi()->enableReleaseAssets();
+}
