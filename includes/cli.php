@@ -80,7 +80,7 @@ class Hydro_CLI {
     }
 
     /**
-     * Resolves countries for clicks without one (100 IPs per batch, ip-api.com).
+     * Resolves countries for clicks without one (1,000 IPs per batch, local GeoIP database).
      *
      * ## OPTIONS
      * [--batches=<n>]
@@ -90,11 +90,10 @@ class Hydro_CLI {
         $total = 0;
         $n     = max( 1, (int) ( $assoc['batches'] ?? 10 ) );
         for ( $i = 0; $i < $n; $i++ ) {
-            $done = hydro_geo_batch();
+            $done = hydro_geo_batch( 1000 );
             $total += $done;
             WP_CLI::log( "Batch " . ( $i + 1 ) . ": {$done} IPs" );
-            if ( $done < 100 ) break;
-            sleep( 4 ); // ip-api: 15 batch requests per minute
+            if ( $done < 1000 ) break;
         }
         WP_CLI::success( "{$total} IP addresses resolved." );
     }

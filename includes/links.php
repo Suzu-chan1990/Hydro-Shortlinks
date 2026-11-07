@@ -32,6 +32,7 @@ function hydro_short_url( object|string $link ): string {
  * Reads the optional link fields from an already unslashed request array.
  * Every value is sanitized here.
  * Returns ['redirect_type','expire','password','utm_source','utm_medium','utm_campaign'] or WP_Error.
+ * The password comes back hashed (password_hash()); plain text is never stored.
  */
 function hydro_link_fields_from_request( array $src ): array|WP_Error {
     $get = static fn( string $k ): string => isset( $src[ $k ] ) && is_scalar( $src[ $k ] ) ? trim( sanitize_text_field( (string) $src[ $k ] ) ) : '';
@@ -52,7 +53,7 @@ function hydro_link_fields_from_request( array $src ): array|WP_Error {
     return [
         'redirect_type' => $redirect,
         'expire'        => $expire !== '' ? $expire : null,
-        'password'      => $password !== '' ? sanitize_text_field( $password ) : null,
+        'password'      => $password !== '' ? hydro_password_hash( sanitize_text_field( $password ) ) : null,
         'utm_source'    => $get( 'utm_source' ) !== '' ? sanitize_text_field( $get( 'utm_source' ) ) : null,
         'utm_medium'    => $get( 'utm_medium' ) !== '' ? sanitize_text_field( $get( 'utm_medium' ) ) : null,
         'utm_campaign'  => $get( 'utm_campaign' ) !== '' ? sanitize_text_field( $get( 'utm_campaign' ) ) : null,

@@ -57,10 +57,9 @@ function hydro_maintenance_action(): void {
         case 'geo_batch':
             $total = 0;
             for ( $i = 0; $i < 5; $i++ ) {
-                $n = hydro_geo_batch();
+                $n = hydro_geo_batch( 1000 );
                 $total += $n;
-                if ( $n < 100 ) break;
-                sleep( 1 ); // ip-api batch limit: 15 requests per minute
+                if ( $n < 1000 ) break;
             }
             hydro_ui_flash( sprintf( 'Geo lookup: %d IP addresses resolved.', $total ) );
             break;
@@ -71,6 +70,14 @@ function hydro_maintenance_action(): void {
         case 'rollup_reset':
             hydro_rollup_reset();
             hydro_ui_flash( 'Statistics will be rebuilt from the first click in the background.' );
+            break;
+        case 'geoip_update':
+            $r = hydro_geoip_update();
+            hydro_ui_flash( $r === true ? 'GeoIP database updated.' : 'GeoIP update failed: ' . $r->get_error_message(), $r === true ? 'success' : 'error' );
+            break;
+        case 'privacy_cleanup':
+            $r = hydro_privacy_cleanup_run();
+            hydro_ui_flash( sprintf( 'Privacy cleanup: %s click rows shortened, %d passwords hashed – %s %%.', number_format_i18n( $r['rows'] ), (int) $r['passwords'], hydro_privacy_cleanup_progress() ) );
             break;
         case 'retention':
             $n = hydro_retention_run();
@@ -113,6 +120,7 @@ function hydro_admin_settings_page(): void {
     $total      = hydro_admin_totals()['links'];
     $geo_open   = hydro_geo_pending();
     $geo_last   = (array) get_option( 'hydro_geo_last_run', [] );
+    $geoip      = hydro_geoip_info();
     $ret_last   = (array) get_option( 'hydro_retention_last_run', [] );
     $tables     = hydro_db_table_info();
     $next       = static fn( string $hook ): string => ( $t = wp_next_scheduled( $hook ) ) ? human_time_diff( time(), $t ) : '–';
@@ -128,7 +136,7 @@ function hydro_admin_settings_page(): void {
         </div>
         <div class="hy-grid hy-grid-3">
             <?php hydro_ui_card_open( 'Links', 'dashicons-admin-links' ); ?>
-                <?php hydro_ui_switch( 'enable_tracking', $tracking, 'Track clicks', 'Stores time, country, referrer and browser of every click (IP shortened to /24 at once).' ); ?>
+                <?php hydro_ui_switch( 'enable_tracking', $tracking, 'Track clicks', 'Stores time, country, referrer domain and browser of every click. IPs are shortened before they are stored (IPv4 /24, IPv6 /64); referrers are stored as domain only.' ); ?>
                 <div class="hy-field">
                     <label class="hy-switch-label" for="hy-slen">Slug length for new links</label>
                     <input class="hy-input hy-input-num" id="hy-slen" type="number" name="default_slug_length" min="4" max="10" value="<?php echo esc_attr( (string) $len ); ?>">
@@ -149,7 +157,7 @@ function hydro_admin_settings_page(): void {
             <?php hydro_ui_card_close(); ?>
 
             <?php hydro_ui_card_open( 'Privacy & data', 'dashicons-shield' ); ?>
-                <?php hydro_ui_switch( 'anonymize_ip', $anon, 'Shorten IPs further in CSV exports', 'IPv4 → x.x.0.0, IPv6 → last two blocks zeroed.' ); ?>
+                <?php hydro_ui_switch( 'anonymize_ip', $anon, 'Shorten IPs further in CSV exports', 'IPv4 → x.x.0.0 (/16), IPv6 → /48.' ); ?>
                 <div class="hy-field">
                     <label class="hy-switch-label" for="hy-ret">Delete clicks older than</label>
                     <div class="hy-inline"><input class="hy-input hy-input-num" id="hy-ret" type="number" name="retention_days" min="0" max="3650" value="<?php echo esc_attr( (string) $retention ); ?>"><span>days</span></div>
@@ -163,7 +171,7 @@ function hydro_admin_settings_page(): void {
                     <div class="hy-inline"><input class="hy-input hy-input-num" id="hy-cache" type="number" name="cache_minutes" min="1" max="60" value="<?php echo esc_attr( (string) $cache_min ); ?>"><span>minutes</span></div>
                     <div class="hy-desc">Reports over large ranges read many click rows; caching keeps the admin fast. "Refresh" on the analytics page always loads fresh data.</div>
                 </div>
-                <div class="hy-desc">Bots and crawlers are never counted (filtered when the click happens). Countries come from ip-api.com (batch endpoint, 100 IPs per hourly run, free, no key).</div>
+                <div class="hy-desc">Bots and crawlers are never counted (filtered when the click happens). Countries come from a local GeoIP database (DB-IP Lite) – IP addresses never leave the server.</div>
             <?php hydro_ui_card_close(); ?>
         </div>
     </form>
@@ -205,8 +213,29 @@ function hydro_admin_settings_page(): void {
                 <span>Next run</span><strong><?php echo esc_html( $next( 'hydro_geo_batch_event' ) ); ?></strong>
             </div>
             <?php if ( ! empty( $geo_last['error'] ) ) : ?><p class="hy-desc hy-text-danger"><?php echo esc_html( (string) $geo_last['error'] ); ?></p><?php endif; ?>
-            <div class="hy-actions"><?php hydro_maintenance_button( 'geo_batch', 'Resolve up to 500 IPs now', 'dashicons-location' ); ?></div>
+            <div class="hy-kv hy-mt">
+                <span>GeoIP database</span><strong><?php echo $geoip['exists'] ? esc_html( ( $geoip['built'] ? wp_date( 'Y-m', $geoip['built'] ) : wp_date( 'Y-m-d', $geoip['mtime'] ) ) . ' · ' . size_format( $geoip['size'], 1 ) ) : 'not downloaded yet'; ?></strong>
+                <span>Last update</span><strong><?php echo ! empty( $geoip['last']['time'] ) ? esc_html( human_time_diff( (int) $geoip['last']['time'] ) . ' ago' . ( empty( $geoip['last']['ok'] ) ? ' · failed' : '' ) ) : '–'; ?></strong>
+            </div>
+            <?php if ( ! empty( $geoip['last']['error'] ) ) : ?><p class="hy-desc hy-text-danger"><?php echo esc_html( (string) $geoip['last']['error'] ); ?></p><?php endif; ?>
+            <p class="hy-desc">Countries are looked up locally – IP addresses are never sent anywhere. The database is downloaded from download.db-ip.com and renewed automatically every month. <a href="https://db-ip.com" target="_blank" rel="noopener">IP Geolocation by DB-IP</a> (CC BY 4.0).</p>
+            <div class="hy-actions">
+                <?php hydro_maintenance_button( 'geo_batch', 'Resolve up to 5,000 IPs now', 'dashicons-location' ); ?>
+                <?php hydro_maintenance_button( 'geoip_update', $geoip['exists'] ? 'Update database' : 'Download database', 'dashicons-download' ); ?>
+            </div>
         <?php hydro_ui_card_close(); ?>
+
+        <?php if ( hydro_privacy_cleanup_progress() < 100 ) : ?>
+        <?php hydro_ui_card_open( 'Privacy cleanup', 'dashicons-shield' ); ?>
+            <p class="hy-desc">One-time job after the update to 3.1.0: link passwords are hashed, stored referrers are shortened to the domain and IPv6 addresses to /64. Statistics stay the same.</p>
+            <div class="hy-capacity">
+                <div class="hy-capacity-head"><span>Running</span><span><?php echo esc_html( (string) hydro_privacy_cleanup_progress() ); ?> %</span></div>
+                <div class="hy-progress"><span style="width:<?php echo esc_attr( (string) hydro_privacy_cleanup_progress() ); ?>%"></span></div>
+                <div class="hy-desc">Next background batch in <?php echo esc_html( $next( 'hydro_privacy_cleanup_event' ) ); ?>.</div>
+            </div>
+            <div class="hy-actions"><?php hydro_maintenance_button( 'privacy_cleanup', 'Run a batch now', 'dashicons-controls-play' ); ?></div>
+        <?php hydro_ui_card_close(); ?>
+        <?php endif; ?>
 
         <?php hydro_ui_card_open( 'Database', 'dashicons-editor-table' ); ?>
             <table class="hy-table hy-table-compact">

@@ -18,6 +18,11 @@
  *   Filled by an hourly job (includes/report.php); analytics read these small rows instead
  *   of scanning the click table. Rollups also keep the statistics of clicks that the
  *   retention job deletes later.
+ *
+ * Privacy cleanup (schema version 3, Hydro 3.1.0)
+ *   One-time background job: replaces plain-text link passwords with hashes, shortens stored
+ *   referrers to the domain and IPv6 addresses to the /64 network in existing click rows.
+ *   Works in id ranges with a cursor (UPDATE by primary key only), like the URL index backfill.
  */
 
 declare(strict_types=1);
@@ -28,12 +33,13 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 // Expensive reads are cached with transients where it matters.
 // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 
-const HYDRO_SCHEMA_VERSION = 2;
+const HYDRO_SCHEMA_VERSION = 3;
 
 add_action( 'plugins_loaded', 'hydro_schema_maybe_upgrade', 5 );
 add_filter( 'cron_schedules', 'hydro_cron_schedules' );
 add_action( 'hydro_url_index_event', 'hydro_url_index_backfill' );
 add_action( 'hydro_retention_event', 'hydro_retention_run' );
+add_action( 'hydro_privacy_cleanup_event', 'hydro_privacy_cleanup_run' );
 add_action( 'init', 'hydro_schedule_jobs' );
 
 function hydro_cron_schedules( array $s ): array {
@@ -77,6 +83,13 @@ function hydro_schema_upgrade(): void {
 
     if ( hydro_table_exists( $index ) && hydro_table_exists( $daily ) ) {
         update_option( 'hydro_schema_version', HYDRO_SCHEMA_VERSION );
+        if ( get_option( 'hydro_privacy_cleanup_max' ) === false ) {
+            // Existing click rows up to this id are cleaned up; newer rows are stored shortened already
+            $cmax = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT MAX(id) FROM %i', hydro_table( 'clicks' ) ) );
+            update_option( 'hydro_privacy_cleanup_max', $cmax, false );
+            update_option( 'hydro_privacy_cleanup_cursor', 0, false );
+            update_option( 'hydro_privacy_cleanup_done', '0', false );
+        }
         if ( get_option( 'hydro_url_index_max' ) === false ) {
             // Backfill covers every link that exists right now; newer links are indexed on creation.
             $max = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT MAX(id) FROM %i', hydro_table( 'links' ) ) );
@@ -109,6 +122,12 @@ function hydro_schedule_jobs(): void {
     }
     if ( ! wp_next_scheduled( 'hydro_geo_batch_event' ) ) {
         wp_schedule_event( time() + 300, 'hourly', 'hydro_geo_batch_event' );
+    }
+    if ( ! wp_next_scheduled( 'hydro_geoip_update_event' ) ) {
+        wp_schedule_event( time() + 180, 'daily', 'hydro_geoip_update_event' );
+    }
+    if ( get_option( 'hydro_privacy_cleanup_done' ) === '0' && ! wp_next_scheduled( 'hydro_privacy_cleanup_event' ) ) {
+        wp_schedule_event( time() + 90, 'hydro_five_minutes', 'hydro_privacy_cleanup_event' );
     }
 }
 
@@ -253,4 +272,85 @@ function hydro_retention_run( int $max_batches = 40 ): int {
     }
     update_option( 'hydro_retention_last_run', [ 'time' => time(), 'deleted' => $total ], false );
     return $total;
+}
+
+/**
+ * One-time privacy cleanup of existing data (see the header of this file).
+ * 1. Plain-text link passwords → password_hash() (few rows, done first).
+ * 2. Click rows up to the id that existed at the upgrade: referrer → domain, IPv6 → /64.
+ *
+ * @return array{done:bool, cursor:int, max:int, passwords:int, rows:int}
+ */
+function hydro_privacy_cleanup_run( int $batch = 5000, int $time_limit = 20 ): array {
+    global $wpdb;
+    $start = microtime( true );
+    $links = hydro_table( 'links' );
+    $clicks = hydro_table( 'clicks' );
+
+    // 1. Passwords: password_hash() is slow on purpose, so 25 per step
+    $pw_done = 0;
+    do {
+        $rows = $wpdb->get_results( $wpdb->prepare(
+            "SELECT id, password FROM %i WHERE password IS NOT NULL AND password <> '' AND password NOT LIKE %s AND id > %d ORDER BY id ASC LIMIT 25",
+            $links, $wpdb->esc_like( '$' ) . '%', (int) get_option( 'hydro_privacy_pw_cursor', 0 )
+        ) );
+        foreach ( $rows as $r ) {
+            if ( ! hydro_password_is_hash( (string) $r->password ) ) {
+                $wpdb->update( $links, [ 'password' => hydro_password_hash( (string) $r->password ) ], [ 'id' => (int) $r->id ] );
+                $pw_done++;
+            }
+            update_option( 'hydro_privacy_pw_cursor', (int) $r->id, false );
+        }
+    } while ( count( $rows ) === 25 && ( microtime( true ) - $start ) < $time_limit );
+    if ( ( microtime( true ) - $start ) >= $time_limit ) {
+        return [ 'done' => false, 'cursor' => (int) get_option( 'hydro_privacy_cleanup_cursor', 0 ), 'max' => (int) get_option( 'hydro_privacy_cleanup_max', 0 ), 'passwords' => $pw_done, 'rows' => 0 ];
+    }
+
+    // 2. Click rows in id ranges
+    $max    = (int) get_option( 'hydro_privacy_cleanup_max', 0 );
+    $cursor = (int) get_option( 'hydro_privacy_cleanup_cursor', 0 );
+    $count  = 0;
+    while ( $cursor < $max && ( microtime( true ) - $start ) < $time_limit ) {
+        $to = min( $max, $cursor + $batch );
+        // Only rows that can change: a referrer with more than the domain, upper case, or an IPv6 address
+        $rows = $wpdb->get_results( $wpdb->prepare(
+            "SELECT id, ip_address, referrer FROM %i WHERE id > %d AND id <= %d
+               AND ( ( referrer IS NOT NULL AND referrer <> '' ) OR ip_address LIKE %s )",
+            $clicks, $cursor, $to, '%:%'
+        ) );
+        foreach ( $rows as $r ) {
+            $data = [];
+            $ref  = (string) $r->referrer;
+            if ( $ref !== '' ) {
+                $origin = hydro_referrer_origin( $ref );
+                if ( $origin !== $ref ) $data['referrer'] = $origin;
+            }
+            $ip = (string) $r->ip_address;
+            if ( str_contains( $ip, ':' ) ) {
+                $short = hydro_anonymize_ip( $ip );
+                if ( $short !== $ip ) $data['ip_address'] = $short;
+            }
+            if ( $data ) {
+                $wpdb->update( $clicks, $data, [ 'id' => (int) $r->id ] );
+                $count++;
+            }
+        }
+        $cursor = $to;
+        update_option( 'hydro_privacy_cleanup_cursor', $cursor, false );
+    }
+
+    $done = $cursor >= $max;
+    if ( $done ) {
+        update_option( 'hydro_privacy_cleanup_done', '1', false );
+        wp_clear_scheduled_hook( 'hydro_privacy_cleanup_event' );
+    }
+    return [ 'done' => $done, 'cursor' => $cursor, 'max' => $max, 'passwords' => $pw_done, 'rows' => $count ];
+}
+
+/** Progress of the privacy cleanup in percent. */
+function hydro_privacy_cleanup_progress(): float {
+    if ( get_option( 'hydro_privacy_cleanup_done' ) === '1' ) return 100.0;
+    $max = (int) get_option( 'hydro_privacy_cleanup_max', 0 );
+    if ( $max <= 0 ) return 100.0;
+    return round( min( 100, (int) get_option( 'hydro_privacy_cleanup_cursor', 0 ) / $max * 100 ), 1 );
 }

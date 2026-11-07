@@ -2,11 +2,10 @@
 /*
  * Module Name: Geo Targeting
  * Module Slug: geo
- * Description: Beispiel-Modul: Geo-Targeting (Vorlage). Nutzt ip-api.com für Demo (cached).
- * Version: 1.0
+ * Description: Example module: geo targeting (template). Uses the local GeoIP database, no external requests.
+ * Version: 1.1
  *
- * Hinweis: Dies ist eine Vorlage. Für Produktion: ersetze ip-api mit eigenem Provider/Key und achte auf
- * Rate-Limits. Das Modul zeigt, wie man apply_filters('hydro_shortlink_redirect_url', $url, $link) verwendet.
+ * Note: this is a template. It shows how to use apply_filters('hydro_shortlink_redirect_url', $url, $link).
  */
 
 if ( ! defined( 'ABSPATH' ) ) exit;
@@ -32,20 +31,9 @@ function hydro_geo_maybe_override_url( $url, $link_row ) {
     $ip = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : '';
     if ( ! $ip ) return $url;
 
-    $cache_key = 'hydro_geo_country_' . md5( $ip );
-    $country = get_transient( $cache_key );
-
-    if ( $country === false ) {
-        $resp = wp_remote_get( "http://ip-api.com/json/" . rawurlencode( $ip ) . "?fields=status,countryCode", [ 'timeout' => 3 ] );
-        if ( ! is_wp_error( $resp ) && wp_remote_retrieve_response_code( $resp ) == 200 ) {
-            $body = wp_remote_retrieve_body( $resp );
-            $json = json_decode( $body );
-            if ( $json && isset( $json->status ) && $json->status == 'success' && isset( $json->countryCode ) ) {
-                $country = sanitize_text_field( $json->countryCode );
-            }
-        }
-        if ( $country ) set_transient( $cache_key, $country, DAY_IN_SECONDS * 7 );
-    }
+    // Local lookup with the shortened IP (country level is enough), nothing leaves the server
+    $country = hydro_geo_country( hydro_anonymize_ip( $ip ) );
+    if ( $country === '--' ) $country = '';
 
     if ( ! $country ) return $url;
 

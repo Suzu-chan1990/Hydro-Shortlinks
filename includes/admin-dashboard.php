@@ -107,9 +107,12 @@ function hydro_health_checks( array $totals ): array {
     if ( ! hydro_url_index_complete() ) {
         $out[] = [ 'normal', 'URL index is being built (' . hydro_url_index_progress() . ' %)', 'Until it is finished, duplicate checks for new links use the slow full-table lookup. Runs in the background every 5 minutes, or at once with WP-CLI: wp hydro index', 'hydro-settings' ];
     }
+    if ( ! hydro_geoip_available() ) {
+        $out[] = [ 'normal', 'No GeoIP database yet', 'Countries are looked up locally. Download the database in Settings → Maintenance (it is renewed automatically every month).', 'hydro-settings' ];
+    }
     $geo_open = hydro_geo_pending();
     if ( $geo_open > 5000 ) {
-        $out[] = [ 'normal', number_format_i18n( $geo_open ) . ' clicks without country', 'The geo cron resolves 100 IPs per hour. You can run batches manually in Settings → Maintenance.', 'hydro-settings' ];
+        $out[] = [ 'normal', number_format_i18n( $geo_open ) . ' clicks without country', 'The geo cron resolves up to 20,000 IPs per hour with the local database. You can run batches manually in Settings → Maintenance.', 'hydro-settings' ];
     }
     $len = hydro_slug_length();
     if ( $totals['links'] / pow( 36, $len ) > 0.05 ) {

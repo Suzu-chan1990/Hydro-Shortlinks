@@ -212,7 +212,7 @@ function hydro_links_page(): void {
 }
 
 /** Advanced fields (used in the create form and in the edit drawer). */
-function hydro_link_fields_html(): void {
+function hydro_link_fields_html( bool $edit = false ): void {
     ?>
     <div class="hy-fields">
         <label><span>Redirect</span>
@@ -224,7 +224,10 @@ function hydro_link_fields_html(): void {
             </select>
         </label>
         <label><span>Expires</span><input class="hy-input" type="datetime-local" name="expire"></label>
-        <label><span>Password</span><input class="hy-input" type="text" name="password" autocomplete="off" placeholder="visitors open /slug?pw=…"></label>
+        <label><span>Password</span><input class="hy-input" type="text" name="password" autocomplete="off" placeholder="<?php echo $edit ? 'leave empty to keep' : 'visitors open /slug?pw=…'; ?>"></label>
+        <?php if ( $edit ) : ?>
+        <label class="hy-check" style="flex-direction:row;align-items:center;gap:6px"><input type="checkbox" name="password_clear" value="1"> <span>Remove password</span></label>
+        <?php endif; ?>
         <label><span>utm_source</span><input class="hy-input" type="text" name="utm_source" placeholder="e.g. x"></label>
         <label><span>utm_medium</span><input class="hy-input" type="text" name="utm_medium" placeholder="e.g. social"></label>
         <label><span>utm_campaign</span><input class="hy-input" type="text" name="utm_campaign" placeholder="e.g. release-2026"></label>
@@ -299,7 +302,7 @@ function hydro_links_drawer_html(): void {
                 <h4>Edit</h4>
                 <input type="hidden" name="id">
                 <label class="hy-full"><span>Target URL</span><input class="hy-input" type="url" name="url" required></label>
-                <?php hydro_link_fields_html(); ?>
+                <?php hydro_link_fields_html( true ); ?>
                 <div class="hy-edit-actions">
                     <button class="hy-btn hy-btn-primary" type="submit"><span class="dashicons dashicons-saved"></span>Save</button>
                     <button class="hy-btn" type="button" data-hy-check-target><span class="dashicons dashicons-yes-alt"></span>Check target</button>
@@ -341,7 +344,8 @@ function hydro_ajax_link_get(): void {
             'url'           => (string) $link->url,
             'redirect_type' => (int) $link->redirect_type,
             'expire'        => $link->expire ? str_replace( ' ', 'T', substr( (string) $link->expire, 0, 16 ) ) : '',
-            'password'      => (string) ( $link->password ?? '' ),
+            'password'      => '',
+            'has_password'  => ! empty( $link->password ),
             'utm_source'    => (string) ( $link->utm_source ?? '' ),
             'utm_medium'    => (string) ( $link->utm_medium ?? '' ),
             'utm_campaign'  => (string) ( $link->utm_campaign ?? '' ),
@@ -361,6 +365,13 @@ function hydro_ajax_link_update(): void {
     if ( ! $url || ! preg_match( '#^https?://#i', $url ) ) wp_send_json_error( 'Please enter a full URL (http:// or https://).', 400 );
     $fields = hydro_link_fields_from_request( wp_unslash( $_POST ) );
     if ( is_wp_error( $fields ) ) wp_send_json_error( $fields->get_error_message(), 400 );
+    // Passwords are stored as hashes and never sent to the browser: an empty field keeps the
+    // current password, "Remove password" deletes it.
+    if ( $fields['password'] === null ) {
+        if ( empty( $_POST['password_clear'] ) ) {
+            unset( $fields['password'] );
+        }
+    }
     $ok = hydro_update_link( $id, $url, $fields );
     if ( is_wp_error( $ok ) ) wp_send_json_error( $ok->get_error_message(), 400 );
     wp_send_json_success( [ 'html' => hydro_links_row_html( hydro_get_link( $id ) ) ] );
@@ -413,13 +424,14 @@ function hydro_links_export(): void {
     header( 'Content-Disposition: attachment; filename="hydro-links-' . gmdate( 'Ymd-His' ) . '.csv"' );
     $out = new SplFileObject( 'php://output', 'w' );
     $out->fwrite( "\xEF\xBB\xBF" ); // UTF-8 BOM for Excel
-    $out->fputcsv( [ 'id', 'short_url', 'slug', 'url', 'redirect_type', 'clicks', 'created_at', 'expire', 'password', 'utm_source', 'utm_medium', 'utm_campaign' ] );
+    // Passwords are stored as hashes; the export only says whether a link is protected
+    $out->fputcsv( [ 'id', 'short_url', 'slug', 'url', 'redirect_type', 'clicks', 'created_at', 'expire', 'password_protected', 'utm_source', 'utm_medium', 'utm_campaign' ] );
 
     $cursor = PHP_INT_MAX;
     do {
         $rows = hydro_links_query( $search, $filter, 5000, 0, $cursor );
         foreach ( $rows as $r ) {
-            $out->fputcsv( [ $r->id, hydro_short_url( $r ), $r->slug, $r->url, $r->redirect_type, $r->clicks, $r->created_at, $r->expire, $r->password, $r->utm_source, $r->utm_medium, $r->utm_campaign ] );
+            $out->fputcsv( [ $r->id, hydro_short_url( $r ), $r->slug, $r->url, $r->redirect_type, $r->clicks, $r->created_at, $r->expire, ! empty( $r->password ) ? 'yes' : 'no', $r->utm_source, $r->utm_medium, $r->utm_campaign ] );
             $cursor = (int) $r->id;
         }
         flush();

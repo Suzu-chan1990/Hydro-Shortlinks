@@ -2,6 +2,29 @@
 
 All notable changes to Hydro Shortlinks.
 
+## [3.1.0] - Privacy
+
+### Security
+
+* **Link passwords are hashed:** passwords were stored in plain text in `{prefix}shortlinks.password` and were part of the CSV export. They are now stored with `password_hash()` and checked with `password_verify()`. Existing passwords are converted by a background job right after the update; a password that is used before the job reaches it is converted on that first use. Protected links keep working with the same `?pw=…`.
+* **CSV export:** the `password` column is replaced by `password_protected` (`yes` / `no`). The CSV import still accepts plain-text passwords and hashes them.
+* **Edit drawer:** the password is no longer sent to the browser. The field stays empty: leave it empty to keep the password, type a new one to change it, or tick "Remove password".
+
+### Privacy
+
+* **IPv6:** shortened to the `/64` network (interface identifier zeroed) instead of replacing only the last block. IPv4 stays at `/24`.
+* **Referrer:** only scheme and domain are stored (`https://t.co`). Paths and query strings can contain personal data and were never used by the statistics.
+* **Existing data:** a one-time background job (every 5 minutes, in id ranges by primary key) shortens referrers and IPv6 addresses in existing click rows. Statistics stay the same. Progress and a manual run are in Settings → Maintenance.
+* **CSV export option** "Shorten IPs further": IPv4 `/16`, IPv6 `/48` (the old pattern produced invalid addresses for compressed IPv6).
+* **README:** "Privacy first" now says exactly what is stored per click.
+
+### Geo lookup
+
+* **Local GeoIP database:** countries come from "IP to Country Lite" by DB-IP (CC BY 4.0), read with the bundled MaxMind DB reader (`lib/maxmind-db-reader`, Apache-2.0). IP addresses are no longer sent to ip-api.com over unencrypted HTTP. The database is downloaded on the server into `wp-content/uploads/hydro-geoip/` (kept on plugin updates) and renewed automatically when it is older than 30 days. Settings → Maintenance shows its edition and has a download button. Without the database, no lookups run.
+* **The backlog can no longer get stuck:** every IP of a batch gets a value in the same run (the country, or `--` for invalid, private and unknown addresses). Clicks without an IP were skipped before and stayed "without country" forever. Batches are now 1,000 IPs and an hourly run handles up to 20 of them (no rate limit, no `sleep()`).
+* **Geo Targeting module:** uses the local database and the shortened IP.
+
+
 ## [3.0.2] - Banner and Icon
 
 ### New

@@ -1,6 +1,6 @@
 <p align="center"><img src="./assets/banner-772x250.png" width="772" alt="Hydro Shortlinks"></p>
 
-![WordPress](https://img.shields.io/badge/WordPress-6.2%2B-blue)
+![WordPress](https://img.shields.io/badge/WordPress-7.1%2B-blue)
 ![PHP](https://img.shields.io/badge/PHP-8.4%2B-purple)
 ![License](https://img.shields.io/badge/license-GPLv2%2B-green)
 ![Scale](https://img.shields.io/badge/tested-1M%20links%20%2F%202M%20clicks-cyan)
@@ -26,7 +26,7 @@ No external service, no tracking pixels, no ads. Your links and your statistics 
 * **Built for scale:** Tested with 1,000,000 links and 2,000,000 clicks. A 12-month report loads in well under a second.
 * **Zero-downtime upgrades:** The link and click tables are never altered. New features only *add* tables (`CREATE` only), so shortlinks never go offline during an update – not even for a second.
 * **Fast redirects:** Requests that cannot be a shortlink (longer than 10 characters, containing `/` or `.`) are skipped without a single database query.
-* **Privacy first:** IP addresses are shortened the moment a click is stored (IPv4 `/24`, IPv6 last block). Bots and crawlers are never counted.
+* **Privacy first:** IP addresses are shortened the moment a click is stored (IPv4 `/24`, IPv6 `/64`), referrers are stored as domain only, countries are looked up locally and link passwords are stored as hashes. Bots and crawlers are never counted. This is data minimization, not full anonymity: time, shortened IP, country, referrer domain and user agent are still stored per click (see [Privacy](#-privacy)).
 * **Developer friendly:** Public PHP API, hooks, REST endpoints and a complete WP-CLI command set.
 * **Plugin Check clean:** Passes the official WordPress Plugin Check without errors or warnings.
 
@@ -195,8 +195,11 @@ sudo -u <fpm-user> wp hydro rollup
 
 # 🔒 Privacy
 
-* IPs are shortened before they are stored; exports can shorten them further (`x.x.0.0`).
-* Countries are resolved with the free batch endpoint of **ip-api.com** – only the already shortened IPs are sent.
+* **IP addresses** are shortened before they are stored: IPv4 to the `/24` network, IPv6 to the `/64` network. CSV exports can shorten them further (IPv4 `/16`, IPv6 `/48`).
+* **Referrers** are stored as domain only (`https://t.co`): paths and query strings can contain personal data and are not used by the statistics.
+* **Countries** are looked up in a local database ([IP to Country Lite by DB-IP](https://db-ip.com), CC BY 4.0). IP addresses never leave the server. The only external request is the monthly download of the database file from `download.db-ip.com` (daily check, new file when the local one is older than 30 days); it is stored in `wp-content/uploads/hydro-geoip/` so plugin updates keep it.
+* **Link passwords** are stored as hashes (`password_hash()`) and never shown again or exported. Visitors still open protected links with `/slug?pw=…` – note that a password in the URL can end up in browser histories and server logs.
+* **What is still stored per click:** time, shortened IP, country, referrer domain and user agent. Use the retention setting (Settings → Privacy & data) to delete raw clicks after a number of days; daily statistics stay.
 * No cookies, no third-party scripts, no external fonts. Chart.js and the QR code library are bundled locally.
 
 ---
@@ -219,12 +222,14 @@ GPL v2 or later.
 
 See `LICENSE`.
 
-Bundled libraries: [Chart.js](https://www.chartjs.org/) 4.5.1 (MIT), [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) 1.4.4 (MIT).
+Bundled libraries: [Chart.js](https://www.chartjs.org/) 4.5.1 (MIT), [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) 1.4.4 (MIT), [MaxMind DB Reader](https://github.com/maxmind/MaxMind-DB-Reader-php) 1.12.1 (Apache-2.0).
+
+GeoIP data: [IP Geolocation by DB-IP](https://db-ip.com) (CC BY 4.0), downloaded on the server, not bundled.
 
 ---
 
 # 📜 Changelog
 
-Current Version: `3.0.2`
+Current Version: `3.1.0`
 
 See `CHANGELOG.md` for detailed release notes.

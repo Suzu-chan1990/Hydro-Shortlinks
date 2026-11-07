@@ -304,6 +304,9 @@
 			k('qr').innerHTML = qrSvg(l.short);
 			const f = $('[data-hy-edit]', drawer);
 			['id', 'url', 'redirect_type', 'expire', 'password', 'utm_source', 'utm_medium', 'utm_campaign'].forEach((n) => { if (f.elements[n]) f.elements[n].value = l[n] ?? ''; });
+			// Passwords are stored as hashes: the field stays empty, the placeholder tells whether one is set
+			if (f.elements.password) f.elements.password.placeholder = l.has_password ? 'set – leave empty to keep' : 'none – visitors open /slug?pw=…';
+			if (f.elements.password_clear) { f.elements.password_clear.checked = false; f.elements.password_clear.closest('label').hidden = !l.has_password; }
 			if (hasChart) {
 				if (drawerChart) drawerChart.destroy();
 				drawerChart = lineChart($('#hy-drawer-chart'), s.series.labels, s.series.data);

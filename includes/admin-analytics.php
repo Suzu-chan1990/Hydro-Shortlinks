@@ -186,7 +186,7 @@ function hydro_clicks_export(): void {
         foreach ( $rows as $r ) {
             $ip = (string) $r->ip_address;
             if ( $anon && $ip !== '' ) {
-                $ip = filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 ) ? preg_replace( '/\.\d+\.\d+$/', '.0.0', $ip ) : preg_replace( '/(:[0-9a-f]*){2}$/i', ':0000:0000', $ip );
+                $ip = hydro_anonymize_ip( $ip, true );
             }
             $out->fputcsv( [ $r->click_time, $r->slug, $r->url, $r->country, $ip, $r->referrer, $r->user_agent ] );
             $cursor = (int) $r->id;

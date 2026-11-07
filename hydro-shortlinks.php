@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Hydro Shortlinks
  * Description: Shortlink manager with dashboard, link management, analytics, QR codes and a module system.
- * Version: 3.0.2
+ * Version: 3.1.0
  * Author: Saguya
  * License: GPLv2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -20,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 // Expensive reads are cached with transients where it matters.
 // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 
-define( 'HYDRO_VERSION', '3.0.2' );
+define( 'HYDRO_VERSION', '3.1.0' );
 define( 'HYDRO_FILE', __FILE__ );
 define( 'HYDRO_DIR', __DIR__ . '/' );
 define( 'HYDRO_URL', plugin_dir_url( __FILE__ ) );
@@ -101,43 +101,110 @@ function hydro_geo_pending(): int {
     return (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i WHERE country IS NULL', hydro_table( 'clicks' ) ) );
 }
 
-/** Resolves countries for up to 100 distinct IPs per run (ip-api batch endpoint). */
-function hydro_geo_batch(): int {
+/**
+ * Resolves countries for up to $limit distinct IPs per run with the local GeoIP database.
+ *
+ * Every selected IP gets a value in the same run: the country code, or '--' when the address is
+ * invalid, private or unknown. No row is ever left behind, so the backlog cannot get stuck on
+ * the same first rows. Without a database nothing is selected (no external lookups).
+ */
+function hydro_geo_batch( int $limit = 1000 ): int {
     global $wpdb;
+    if ( ! hydro_geoip_available() ) {
+        update_option( 'hydro_geo_last_run', [ 'time' => time(), 'resolved' => 0, 'error' => 'No GeoIP database yet (Settings → Privacy & data).' ], false );
+        return 0;
+    }
     $ips = $wpdb->get_col( $wpdb->prepare(
-        "SELECT DISTINCT ip_address FROM %i WHERE country IS NULL AND ip_address != '' AND ip_address IS NOT NULL LIMIT 100",
-        hydro_table( 'clicks' )
+        'SELECT DISTINCT ip_address FROM %i WHERE country IS NULL LIMIT %d',
+        hydro_table( 'clicks' ), $limit
     ) );
     if ( empty( $ips ) ) {
         update_option( 'hydro_geo_last_run', [ 'time' => time(), 'resolved' => 0 ], false );
         return 0;
     }
 
-    $response = wp_safe_remote_post( 'http://ip-api.com/batch?fields=countryCode,query', [
-        'body'    => wp_json_encode( $ips ),
-        'timeout' => 15,
-    ] );
-    if ( is_wp_error( $response ) ) {
-        update_option( 'hydro_geo_last_run', [ 'time' => time(), 'resolved' => 0, 'error' => $response->get_error_message() ], false );
-        return 0;
-    }
-    $data = json_decode( wp_remote_retrieve_body( $response ), true );
-    if ( ! is_array( $data ) ) return 0;
-
     $done = 0;
-    foreach ( $data as $item ) {
-        $code = ( ! empty( $item['countryCode'] ) ) ? substr( (string) $item['countryCode'], 0, 2 ) : '--';
-        if ( ! empty( $item['query'] ) ) {
-            // Only rows that still have no country: uses the `country` index and leaves resolved rows untouched.
-            $wpdb->query( $wpdb->prepare(
-                'UPDATE %i SET country = %s WHERE country IS NULL AND ip_address = %s',
-                hydro_table( 'clicks' ), $code, (string) $item['query']
-            ) );
-            $done++;
+    foreach ( $ips as $ip ) {
+        // get_col() returns NULL for empty strings as well, so NULL stands for "no IP stored"
+        $code = ( $ip === null || $ip === '' ) ? '--' : hydro_geo_country( (string) $ip );
+        if ( $code === '' ) break; // database vanished during the run
+        // Only rows that still have no country: uses the `country` index and leaves resolved rows untouched.
+        if ( $ip === null || $ip === '' ) {
+            $wpdb->query( $wpdb->prepare( "UPDATE %i SET country = %s WHERE country IS NULL AND ( ip_address IS NULL OR ip_address = '' )", hydro_table( 'clicks' ), $code ) );
+        } else {
+            $wpdb->query( $wpdb->prepare( 'UPDATE %i SET country = %s WHERE country IS NULL AND ip_address = %s', hydro_table( 'clicks' ), $code, (string) $ip ) );
         }
+        $done++;
     }
     update_option( 'hydro_geo_last_run', [ 'time' => time(), 'resolved' => $done ], false );
     return $done;
+}
+
+/**
+ * Shortens an IP address before it is stored: IPv4 to the /24 network (last octet 0),
+ * IPv6 to the /64 network (interface identifier zeroed). Anything else is not stored.
+ * $strong (CSV export option): IPv4 /16, IPv6 /48.
+ */
+function hydro_anonymize_ip( string $ip, bool $strong = false ): string {
+    if ( filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 ) ) {
+        return (string) preg_replace( $strong ? '/\.\d+\.\d+$/' : '/\.\d+$/', $strong ? '.0.0' : '.0', $ip );
+    }
+    if ( filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6 ) ) {
+        $bin = inet_pton( $ip );
+        if ( $bin === false ) return '';
+        $keep = $strong ? 6 : 8;
+        $net  = inet_ntop( substr( $bin, 0, $keep ) . str_repeat( "\0", 16 - $keep ) );
+        return $net === false ? '' : $net;
+    }
+    return '';
+}
+
+/**
+ * Referrer as stored: only scheme and host ("https://example.com"). Paths and query strings can
+ * hold personal data (search terms, tokens, IDs) and are not used by the statistics.
+ */
+function hydro_referrer_origin( string $referrer ): string {
+    $referrer = trim( $referrer );
+    if ( $referrer === '' ) return '';
+    $parts = wp_parse_url( $referrer );
+    if ( ! is_array( $parts ) || empty( $parts['host'] ) ) return '';
+    $scheme = isset( $parts['scheme'] ) ? strtolower( (string) $parts['scheme'] ) : 'https';
+    return substr( $scheme . '://' . strtolower( (string) $parts['host'] ), 0, 255 );
+}
+
+/** True if a stored link password is a hash (password_hash()) and not an old plain-text value. */
+function hydro_password_is_hash( string $stored ): bool {
+    return $stored !== '' && password_get_info( $stored )['algo'] !== null;
+}
+
+/** Hashes a link password for storage. */
+function hydro_password_hash( string $plain ): string {
+    return password_hash( $plain, PASSWORD_DEFAULT );
+}
+
+/**
+ * Checks the password given by a visitor. Old plain-text values (before 3.1.0) are still
+ * accepted and replaced by a hash on the first correct use.
+ */
+function hydro_password_check( object $link, string $given ): bool {
+    global $wpdb;
+    $stored = (string) $link->password;
+    // Passwords were stored after sanitize_text_field(); accept the raw and the sanitized form
+    $candidates = array_unique( [ $given, sanitize_text_field( $given ) ] );
+
+    if ( hydro_password_is_hash( $stored ) ) {
+        foreach ( $candidates as $c ) {
+            if ( password_verify( $c, $stored ) ) return true;
+        }
+        return false;
+    }
+    foreach ( $candidates as $c ) {
+        if ( hash_equals( $stored, $c ) ) {
+            $wpdb->update( hydro_table( 'links' ), [ 'password' => hydro_password_hash( $stored ) ], [ 'id' => (int) $link->id ] );
+            return true;
+        }
+    }
+    return false;
 }
 
 class Hydro_Shortlinks {
@@ -169,10 +236,16 @@ class Hydro_Shortlinks {
         wp_clear_scheduled_hook( 'hydro_url_index_event' );
         wp_clear_scheduled_hook( 'hydro_retention_event' );
         wp_clear_scheduled_hook( 'hydro_rollup_event' );
+        wp_clear_scheduled_hook( 'hydro_geoip_update_event' );
+        wp_clear_scheduled_hook( 'hydro_privacy_cleanup_event' );
     }
 
+    // Local lookups need no rate limit: several batches per run, at most ~20 seconds
     public function process_geo_batch(): void {
-        hydro_geo_batch();
+        $start = microtime( true );
+        for ( $i = 0; $i < 20 && ( microtime( true ) - $start ) < 20; $i++ ) {
+            if ( hydro_geo_batch( 1000 ) < 1000 ) break;
+        }
     }
 
     /**
@@ -293,7 +366,7 @@ class Hydro_Shortlinks {
         // Public shortlink: visitors cannot carry a nonce. The value is only compared, never stored or output.
         // phpcs:ignore WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
         $pw = isset( $_GET['pw'] ) && is_string( $_GET['pw'] ) ? (string) wp_unslash( $_GET['pw'] ) : null;
-        if ( $link->password && ( $pw === null || ! hash_equals( (string) $link->password, $pw ) ) ) {
+        if ( $link->password && ( $pw === null || ! hydro_password_check( $link, $pw ) ) ) {
             wp_die( 'Password required.', 'Password required', [ 'response' => 403 ] );
         }
 
@@ -316,19 +389,16 @@ class Hydro_Shortlinks {
         if ( $tracking && ! $is_bot ) {
             $ip = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : '';
 
-            // GDPR: anonymize the IP address immediately
-            if ( filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 ) ) {
-                $ip = preg_replace( '/\.\d+$/', '.0', $ip );
-            } elseif ( filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6 ) ) {
-                $ip = preg_replace( '/:[0-9a-fA-F]+$/', ':0000', $ip );
-            }
+            // GDPR: shorten the IP address before it is stored (IPv4 /24, IPv6 /64)
+            $ip = hydro_anonymize_ip( $ip );
 
             $wpdb->insert( $this->table_clicks, [
                 'shortlink_id' => $link->id,
                 'click_time'   => current_time( 'mysql' ),
                 'ip_address'   => $ip,
                 'user_agent'   => $ua,
-                'referrer'     => isset( $_SERVER['HTTP_REFERER'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_REFERER'] ) ) : '',
+                // Domain only: full referrer URLs can carry personal data in path or query
+                'referrer'     => isset( $_SERVER['HTTP_REFERER'] ) ? hydro_referrer_origin( sanitize_text_field( wp_unslash( $_SERVER['HTTP_REFERER'] ) ) ) : '',
             ] );
             // Atomic increment: concurrent clicks never overwrite each other's count.
             $wpdb->query( $wpdb->prepare( 'UPDATE %i SET clicks = clicks + 1 WHERE id = %d', $this->table_links, (int) $link->id ) );
@@ -344,6 +414,7 @@ class Hydro_Shortlinks {
     }
 }
 
+require_once HYDRO_DIR . 'includes/geoip.php';
 require_once HYDRO_DIR . 'includes/schema.php';
 require_once HYDRO_DIR . 'includes/links.php';
 require_once HYDRO_DIR . 'includes/report.php';
