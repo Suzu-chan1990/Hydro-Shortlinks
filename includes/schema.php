@@ -354,3 +354,164 @@ function hydro_privacy_cleanup_progress(): float {
     if ( $max <= 0 ) return 100.0;
     return round( min( 100, (int) get_option( 'hydro_privacy_cleanup_cursor', 0 ) / $max * 100 ), 1 );
 }
+
+/* ---------------------------------------------------------------------------------------------
+ * Schema check / repair (3.1.1)
+ *
+ * Sites that were installed with an old Hydro version can have click / link tables without
+ * columns that 3.x needs (e.g. `country`). create_tables() never alters existing tables, so
+ * those columns were never added. The check below finds them; the repair adds them only when
+ * an admin asks for it (notice button or "wp hydro repair"), using online ALTERs
+ * (ALGORITHM=INSTANT / INPLACE, LOCK=NONE) where the database supports them.
+ * ------------------------------------------------------------------------------------------- */
+
+add_action( 'admin_notices', 'hydro_schema_notice' );
+add_action( 'admin_post_hydro_schema_repair', 'hydro_schema_repair_action' );
+
+/** Columns Hydro 3.x needs: table => column => [definition, minimum VARCHAR length (0 = no check)]. */
+function hydro_required_columns(): array {
+    return [
+        'clicks' => [
+            'ip_address' => [ 'VARCHAR(45) DEFAULT NULL', 45 ],
+            'country'    => [ 'VARCHAR(2) DEFAULT NULL', 0 ],
+            'user_agent' => [ 'TEXT DEFAULT NULL', 0 ],
+            'referrer'   => [ 'TEXT DEFAULT NULL', 0 ],
+        ],
+        'links' => [
+            'redirect_type' => [ 'SMALLINT(3) NOT NULL DEFAULT 302', 0 ],
+            'clicks'        => [ 'BIGINT(20) UNSIGNED NOT NULL DEFAULT 0', 0 ],
+            'password'      => [ 'VARCHAR(200) DEFAULT NULL', 100 ], // password hashes need room
+            'expire'        => [ 'DATETIME DEFAULT NULL', 0 ],
+            'utm_source'    => [ 'VARCHAR(255) DEFAULT NULL', 0 ],
+            'utm_medium'    => [ 'VARCHAR(255) DEFAULT NULL', 0 ],
+            'utm_campaign'  => [ 'VARCHAR(255) DEFAULT NULL', 0 ],
+            'created_at'    => [ 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP', 0 ],
+        ],
+    ];
+}
+
+/**
+ * Differences between the live tables and what Hydro needs.
+ * Each entry: table, column, problem (missing | too_short | no_index), def.
+ * The result is cached per plugin version, so normal requests run no SHOW queries.
+ */
+function hydro_schema_problems( bool $fresh = false ): array {
+    $cache = get_option( 'hydro_schema_check', [] );
+    if ( ! $fresh && is_array( $cache ) && ( $cache['version'] ?? '' ) === HYDRO_VERSION && isset( $cache['problems'] ) ) {
+        return (array) $cache['problems'];
+    }
+
+    global $wpdb;
+    $problems = [];
+    foreach ( hydro_required_columns() as $which => $cols ) {
+        $table = hydro_table( $which );
+        if ( ! hydro_table_exists( $table ) ) continue;
+        $have = [];
+        foreach ( (array) $wpdb->get_results( $wpdb->prepare( 'SHOW COLUMNS FROM %i', $table ) ) as $c ) {
+            $have[ (string) $c->Field ] = strtolower( (string) $c->Type );
+        }
+        if ( ! $have ) continue;
+        foreach ( $cols as $name => [ $def, $min ] ) {
+            if ( ! isset( $have[ $name ] ) ) {
+                $problems[] = [ 'table' => $table, 'column' => $name, 'problem' => 'missing', 'def' => $def ];
+            } elseif ( $min > 0 && preg_match( '/^varchar\((\d+)\)/', $have[ $name ], $m ) && (int) $m[1] < $min ) {
+                $problems[] = [ 'table' => $table, 'column' => $name, 'problem' => 'too_short', 'def' => $def ];
+            }
+        }
+    }
+
+    // The geo job and the country filter rely on an index on clicks.country
+    $clicks = hydro_table( 'clicks' );
+    if ( hydro_table_exists( $clicks ) && ! $wpdb->get_results( $wpdb->prepare( 'SHOW INDEX FROM %i WHERE Column_name = %s', $clicks, 'country' ) ) ) {
+        $problems[] = [ 'table' => $clicks, 'column' => 'country', 'problem' => 'no_index', 'def' => '' ];
+    }
+
+    update_option( 'hydro_schema_check', [ 'version' => HYDRO_VERSION, 'time' => time(), 'problems' => $problems ], false );
+    return $problems;
+}
+
+/** True if the click table has the `country` column (cached check). */
+function hydro_clicks_has_country(): bool {
+    foreach ( hydro_schema_problems() as $p ) {
+        if ( $p['column'] === 'country' && $p['problem'] === 'missing' ) return false;
+    }
+    return true;
+}
+
+/**
+ * Adds missing columns / the country index and widens too short columns.
+ * Each change is tried online first (INSTANT, then INPLACE without lock), then as a plain ALTER.
+ *
+ * @return list<array{table:string,column:string,problem:string,ok:bool,error:string}>
+ */
+function hydro_schema_repair(): array {
+    global $wpdb;
+    $log = [];
+    foreach ( hydro_schema_problems( true ) as $p ) {
+        $t   = (string) $p['table'];
+        $col = (string) $p['column'];
+        // Table names come from hydro_table(), column names and definitions from hydro_required_columns().
+        switch ( $p['problem'] ) {
+            case 'missing':
+                $base  = "ALTER TABLE `{$t}` ADD COLUMN `{$col}` {$p['def']}";
+                $tries = [ ', ALGORITHM=INSTANT', ', ALGORITHM=INPLACE, LOCK=NONE', '' ];
+                break;
+            case 'too_short':
+                $base  = "ALTER TABLE `{$t}` MODIFY COLUMN `{$col}` {$p['def']}";
+                $tries = [ ', ALGORITHM=INPLACE, LOCK=NONE', '' ];
+                break;
+            default: // no_index
+                $base  = "ALTER TABLE `{$t}` ADD KEY `{$col}` (`{$col}`)";
+                $tries = [ ', ALGORITHM=INPLACE, LOCK=NONE', '' ];
+        }
+        $ok  = false;
+        $err = '';
+        $suppress = $wpdb->suppress_errors( true );
+        foreach ( $tries as $tail ) {
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- identifiers from fixed lists, see above.
+            if ( $wpdb->query( $base . $tail ) !== false ) { $ok = true; break; }
+            $err = (string) $wpdb->last_error;
+        }
+        $wpdb->suppress_errors( $suppress );
+        $log[] = [ 'table' => $t, 'column' => $col, 'problem' => (string) $p['problem'], 'ok' => $ok, 'error' => $ok ? '' : $err ];
+    }
+    hydro_schema_problems( true );
+    return $log;
+}
+
+/** Admin notice with a repair button while the tables are incomplete. */
+function hydro_schema_notice(): void {
+    if ( ! current_user_can( 'manage_options' ) ) return;
+    $result = get_transient( 'hydro_schema_repair_result' );
+    if ( is_array( $result ) ) {
+        delete_transient( 'hydro_schema_repair_result' );
+        $failed = array_filter( $result, fn( $r ) => ! $r['ok'] );
+        $class  = $failed ? 'notice-error' : 'notice-success';
+        echo '<div class="notice ' . esc_attr( $class ) . ' is-dismissible"><p><strong>Hydro:</strong> ';
+        echo $failed ? esc_html( 'Repair incomplete: ' . implode( '; ', array_map( fn( $r ) => $r['column'] . ' – ' . $r['error'], $failed ) ) ) : esc_html__( 'Database tables repaired.', 'hydro-shortlinks' );
+        echo '</p></div>';
+    }
+    $problems = hydro_schema_problems();
+    if ( ! $problems ) return;
+    $labels = array_map( fn( $p ) => $p['column'] . ' (' . match ( $p['problem'] ) { 'missing' => 'missing', 'too_short' => 'too short', default => 'no index' } . ')', $problems );
+    ?>
+    <div class="notice notice-error"><p>
+        <strong>Hydro:</strong> <?php echo esc_html( 'The database tables were created by an older Hydro version and are incomplete: ' . implode( ', ', array_unique( $labels ) ) . '. Country statistics and the geo lookup do not work until they are repaired.' ); ?>
+    </p><form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin:0 0 10px">
+        <input type="hidden" name="action" value="hydro_schema_repair">
+        <?php wp_nonce_field( 'hydro_schema_repair' ); ?>
+        <button type="submit" class="button button-primary"><?php esc_html_e( 'Repair tables now', 'hydro-shortlinks' ); ?></button>
+        <span class="description"><?php esc_html_e( 'Adds the missing columns without locking the tables (where the database supports it). Same as "wp hydro repair".', 'hydro-shortlinks' ); ?></span>
+    </form></div>
+    <?php
+}
+
+function hydro_schema_repair_action(): void {
+    if ( ! current_user_can( 'manage_options' ) ) wp_die( 'Forbidden', 403 );
+    check_admin_referer( 'hydro_schema_repair' );
+    @set_time_limit( 0 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors -- may be disabled on the host.
+    set_transient( 'hydro_schema_repair_result', hydro_schema_repair(), 300 );
+    wp_safe_redirect( wp_get_referer() ?: admin_url() );
+    exit;
+}
+

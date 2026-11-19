@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Hydro Shortlinks
  * Description: Shortlink manager with dashboard, link management, analytics, QR codes and a module system.
- * Version: 3.1.0
+ * Version: 3.1.1
  * Author: Saguya
  * License: GPLv2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -20,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 // Expensive reads are cached with transients where it matters.
 // phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 
-define( 'HYDRO_VERSION', '3.1.0' );
+define( 'HYDRO_VERSION', '3.1.1' );
 define( 'HYDRO_FILE', __FILE__ );
 define( 'HYDRO_DIR', __DIR__ . '/' );
 define( 'HYDRO_URL', plugin_dir_url( __FILE__ ) );
@@ -98,6 +98,7 @@ function hydro_slug_is_valid( string $slug ): bool {
 /** Number of clicks still waiting for a country (uses the `country` index). */
 function hydro_geo_pending(): int {
     global $wpdb;
+    if ( ! hydro_clicks_has_country() ) return 0; // old click table without `country` (wp hydro repair)
     return (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i WHERE country IS NULL', hydro_table( 'clicks' ) ) );
 }
 
@@ -110,6 +111,10 @@ function hydro_geo_pending(): int {
  */
 function hydro_geo_batch( int $limit = 1000 ): int {
     global $wpdb;
+    if ( ! hydro_clicks_has_country() ) {
+        update_option( 'hydro_geo_last_run', [ 'time' => time(), 'resolved' => 0, 'error' => 'The click table has no `country` column (created by an old Hydro version). Run "wp hydro repair" or use the notice in the admin.' ], false );
+        return 0;
+    }
     if ( ! hydro_geoip_available() ) {
         update_option( 'hydro_geo_last_run', [ 'time' => time(), 'resolved' => 0, 'error' => 'No GeoIP database yet (Settings → Privacy & data).' ], false );
         return 0;

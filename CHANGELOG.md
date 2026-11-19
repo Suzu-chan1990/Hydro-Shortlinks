@@ -2,6 +2,15 @@
 
 All notable changes to Hydro Shortlinks.
 
+## [3.1.1] - Schema repair
+
+### Fixed
+
+* **Old click tables without `country`:** sites that were installed with an old Hydro version kept their original click table (`create_tables()` never alters existing tables), so it had no `country` column. The geo job failed with `Unknown column 'country'`, and country statistics could not work. Hydro now checks the click and link tables once per version (missing columns, a too short `password` column for hashes, missing index on `country`).
+* **Repair on request:** an admin notice with a "Repair tables now" button, and `wp hydro repair [--dry-run]`. Columns are added with `ALGORITHM=INSTANT` or `ALGORITHM=INPLACE, LOCK=NONE` where the database supports it, so the tables stay usable. Nothing is altered automatically.
+* **No more database error** in the geo job, `wp hydro geo` and `wp hydro status` while the column is missing; they point to the repair instead.
+
+
 ## [3.1.0] - Privacy
 
 ### Security

@@ -4,7 +4,7 @@ Tags: shortlink, url shortener, redirect, analytics, qr code
 Requires at least: 7.1
 Tested up to: 7.2
 Requires PHP: 8.4
-Stable tag: 3.1.0
+Stable tag: 3.1.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -31,6 +31,9 @@ than 30 days, or when you click "Download database" in Settings. No IP addresses
 IP Geolocation by DB-IP (https://db-ip.com), licensed under CC BY 4.0. Terms: https://db-ip.com/tos
 
 == Changelog ==
+
+= 3.1.1 =
+* Fix: sites installed with an old Hydro version had no `country` column in the click table, so the geo lookup failed with a database error. Hydro now detects missing columns, shows a notice with a repair button and has "wp hydro repair" (online ALTER where the database supports it).
 
 = 3.1.0 =
 * Link passwords are stored as hashes; existing passwords are converted in the background. The CSV export only says whether a link is protected.

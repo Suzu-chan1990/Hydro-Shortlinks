@@ -1,6 +1,6 @@
 <?php
 /**
- * WP-CLI: wp hydro <status|index|geo|prune|create|top>
+ * WP-CLI: wp hydro <status|index|geo|prune|create|top|repair>
  * Run as the site's PHP-FPM user, never as root.
  */
 
@@ -32,7 +32,8 @@ class Hydro_CLI {
             [ 'key' => 'Tracking', 'value' => get_option( 'hydro_enable_tracking', '1' ) === '1' ? 'on' : 'off' ],
             [ 'key' => 'URL index', 'value' => hydro_url_index_progress() . ' %' ],
             [ 'key' => 'Daily statistics', 'value' => hydro_rollup_progress() . ' % (through ' . hydro_rollup_cursor() . ')' ],
-            [ 'key' => 'Clicks without country', 'value' => number_format( hydro_geo_pending() ) ],
+            [ 'key' => 'Clicks without country', 'value' => hydro_clicks_has_country() ? number_format( hydro_geo_pending() ) : 'column missing (wp hydro repair)' ],
+            [ 'key' => 'Database tables', 'value' => ( $p = hydro_schema_problems( true ) ) ? count( $p ) . ' problem(s) – wp hydro repair' : 'OK' ],
             [ 'key' => 'Modules', 'value' => implode( ', ', (array) get_option( 'hydro_enabled_modules', [] ) ) ],
         ];
         WP_CLI\Utils\format_items( 'table', $rows, [ 'key', 'value' ] );
@@ -87,6 +88,9 @@ class Hydro_CLI {
      * : Number of batches. Default 10.
      */
     public function geo( array $args, array $assoc ): void {
+        if ( ! hydro_clicks_has_country() ) {
+            WP_CLI::error( 'The click table has no `country` column (created by an old Hydro version). Run "wp hydro repair" first.' );
+        }
         $total = 0;
         $n     = max( 1, (int) ( $assoc['batches'] ?? 10 ) );
         for ( $i = 0; $i < $n; $i++ ) {
@@ -96,6 +100,29 @@ class Hydro_CLI {
             if ( $done < 1000 ) break;
         }
         WP_CLI::success( "{$total} IP addresses resolved." );
+    }
+
+    /**
+     * Checks the click and link tables and adds missing columns / the country index.
+     * Uses online ALTERs (ALGORITHM=INSTANT / INPLACE, LOCK=NONE) where the database supports them.
+     *
+     * ## OPTIONS
+     * [--dry-run]
+     * : Only show what is missing.
+     */
+    public function repair( array $args, array $assoc ): void {
+        $problems = hydro_schema_problems( true );
+        if ( ! $problems ) {
+            WP_CLI::success( 'Database tables are complete.' );
+            return;
+        }
+        WP_CLI\Utils\format_items( 'table', $problems, [ 'table', 'column', 'problem' ] );
+        if ( isset( $assoc['dry-run'] ) ) return;
+
+        $log = hydro_schema_repair();
+        WP_CLI\Utils\format_items( 'table', array_map( fn( $r ) => $r + [ 'result' => $r['ok'] ? 'OK' : 'FAILED' ], $log ), [ 'table', 'column', 'problem', 'result', 'error' ] );
+        if ( array_filter( $log, fn( $r ) => ! $r['ok'] ) ) WP_CLI::error( 'Not everything could be repaired.' );
+        WP_CLI::success( 'Database tables repaired. Run "wp hydro geo --batches=100" to fill in the countries.' );
     }
 
     /**
